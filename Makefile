@@ -1,4 +1,5 @@
-ROLE          ?= default ## make {func} ROLE=<AWS_ACCOUNT_ROLE>
+ROLE          ?= 'default'     ## make {func} ROLE=<AWS_ACCOUNT_ROLE>
+REGION        ?= 'us-east-1'   ## make {func} REGION=<AWS_TARGET_REGION>
 
 
 ###############################################
@@ -10,20 +11,27 @@ SHELL         := /bin/bash
 CHDIR_SHELL   := $(SHELL)
 OS            := darwin
 
-ACCOUNT_ID    := $(shell aws sts --profile $(ROLE) get-caller-identity --output text --query 'Account')
-
 BASE_DIR      := $(shell pwd)
+ACCOUNT_ID    := $(shell aws sts --profile $(ROLE) get-caller-identity --output text --query 'Account')
+INVENTORY     := $(shell which terraform-inventory |awk '{print$3}')
+
 STATE_DIR     := $(BASE_DIR)/_states
 LOGS_DIR      := $(BASE_DIR)/_logs
 KEYS_DIR      := $(BASE_DIR)/_keys
 
-## Default generic to test until I move it over to Rake
+MODULE        := $(BASE_DIR)/modules
+ANSIBLE       := $(BASE_DIR)/ansible
+
+
+## Default generics to test until I move it over to Rake
 default: test
+all:     terraform provision
+rebuild: destroy all
 
 
 ###############################################
 # Helper functions
-# - follows standard design patterns
+# - follows best practices design patterns
 ###############################################
 define chdir
 	$(eval _D=$(firstword $(1) $(@D)))
@@ -31,10 +39,13 @@ define chdir
 endef
 
 .check-region:
-	@if test "$(REGION)" = "" ; then echo "REGION not set"; exit 1; fi
+	@if test "$(REGION)" = ""; then  echo "REGION not set"; exit 1; fi
 
-.source-dir:
-	$(call chdir, modules)
+.check-role:
+		@if test "$(ROLE)" = ""; then  echo "ROLE not set"; exit 1; fi
+
+.directory-%:
+	$(call chdir, ${${*}})
 
 .assert-%:
 	@if [ "${${*}}" = "" ]; then                                                  \
@@ -43,79 +54,69 @@ endef
 		echo "[√] ${*} set as: ${${*}}"                                           ; \
 	fi
 
+.roles: .directory-ANSIBLE
+	[[ `ls roles/*/ 2>/dev/null` ]] && rm -fr roles/*                           ; \
+	sed -e "s/<SSH_KEYFILE>/$(ROLE)/" ansible.tmpl.cfg >| ansible.cfg           ; \
+	ansible-galaxy install -r requirements.yml
 
 
 ###############################################
 # Generic functions
-# - follows standard design patterns
 ###############################################
-graph: .source-dir
+graph: .directory-MODULE
 	terraform init && terraform graph |dot -Tpng >| $(LOGS_DIR)/graph.png
 
-clean: .source-dir
-	@rm -rf .terraform
-	@rm -f $(LOGS_DIR)/graph.png
-	@rm -f $(LOGS_DIR)/*.log
+clean:
+	@rm -rf $(TERRAFORM)/.terraform
+	@rm -f  $(LOGS_DIR)/graph.png
+	@rm -f  $(LOGS_DIR)/*.log
 
+globals:
+	@echo "REGION set to: $(REGION)"
+	@echo "ROLE   set to: $(ROLE)"
 
 ###############################################
 # Testing functions
-# - follows standard design patterns
+# - follow testing design patterns
 ###############################################
 
 test:
-	@echo "[info] Testing Terraform"
-	@if ! terraform fmt -write=false -check=true >> /dev/null; then               \
-		echo "[✗] Terraform fmt failed: $$d"                                      ; \
-		exit 1                                                                    ; \
-	else                                                                          \
-		echo "[√] Terraform fmt"                                                  ; \
-	fi
-	@for d in $$(find . -type f -name '*.tf' -path "./targets/*" -not -path "**/.terraform/*" -exec dirname {} \; | sort -u); do \
-		cd $$d                                                                    ; \
-		terraform init -backend=false >> /dev/null                                ; \
-		terraform validate -check-variables=false                                 ; \
-		if [ $$? -eq 1 ]; then 																											\
-			echo "[✗] Terraform validate failed: $$d"; 																\
-			exit 1; 																																	\
-		fi; 																																				\
-	done
-	@echo "[√] terraform validate targets (not including variables)"
-	@for d in $$(find . -type f -name '*.tf' -path "./examples/*" -not -path "**/.terraform/*" -exec dirname {} \; | sort -u); do \
-		cd $$d; 																																		\
-		terraform init -backend=false >> /dev/null; 																\
-		terraform validate; 																												\
-		if [ $$? -eq 1 ]; then 																											\
-			echo "[✗] Terraform validate failed: $$d"; 																\
-			exit 1; 																																	\
-		fi; 																																				\
-	done
-	@echo "[√] Terraform validate examples"
-
-.PHONY: default test
-
+	@echo 'No tests currently configured...'
 
 
 ###############################################
 # Deployment functions
-# - follows standard design patterns
+# - follows deployment patterns
 ###############################################
 
+init: .directory-MODULE
+	terraform init
 
-# Add your build functions here...
+terraform: init .directory-MODULE .check-region
+	aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform plan                \
+		-var region=$(REGION)                                                       \
+		-var key_name=$(ROLE)                                                       \
+	2>&1 |tee $(LOGS_DIR)/sonarqube-plan.log                                    ; \
+                                                                                \
+	aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform apply               \
+		-state=$(STATE_DIR)/$(ROLE)_terraform.tfstate                               \
+		-var region=$(REGION)                                                       \
+		-var key_name=$(ROLE)                                                       \
+		-auto-approve                                                               \
+	2>&1 |tee $(LOGS_DIR)/sonarqube-apply.log
 
 
-target_name-destroy: .source-dir .check-region
-	echo -e "\n\n\n\ntarget_name-destroy: $(date +"%Y-%m-%d @ %H:%M:%S")\n" 			\
-		>> $(LOGS_DIR)/target_name-destroy.log
-	terraform init 2>&1 |tee $(LOGS_DIR)/target_name-init.log
-	aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform destroy 						\
-		-state=$(STATE_DIR)/$(ACCOUNT_ID)/${REGION}-target_name.tfstate 						\
-		-var region="${REGION}" 																										\
-		-auto-approve																																\
-	2>&1 |tee $(LOGS_DIR)/target_name-destroy.log
+destroy: init .directory-MODULE .check-region
+	@echo -e "\n\n\n\nsonarqube-destroy: $(date +"%Y-%m-%d @ %H:%M:%S")\n"        \
+		>> $(LOGS_DIR)/sonarqube-destroy.log
+	aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform destroy             \
+		-state=$(STATE_DIR)/$(ROLE)_terraform.tfstate                               \
+		-var region=$(REGION)		                                                    \
+		-var key_name=$(ROLE)                                                       \
+		-auto-approve                                                               \
+	2>&1 |tee $(LOGS_DIR)/sonarqube-destroy.log
 
 
-target_name-purge: target_name-destroy clean
-	@rm -f $(STATE_DIR)/$(ACCOUNT_ID)/${REGION}-target_name.tfstate
-	@rm -f $(KEYS_DIR)/*$(ACCOUNT_ID)-${REGION}*
+ssh: .directory-MODULE
+	exec `terraform output -state=$(STATE_DIR)/$(ROLE)_terraform.tfstate          \
+	|head -1 |awk -F' = ' '{print$$2}' |sed 's/.\//..\//'`
