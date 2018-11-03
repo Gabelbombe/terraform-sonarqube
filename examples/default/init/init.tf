@@ -7,7 +7,7 @@ locals {
 }
 
 module "sonarqube-init" {
-  prefix = "sonarqube"
-  source = "../../../init"
-  tags   = "${local.tags}"
+  name_prefix = "sonarqube"
+  source      = "../../../modules/init"
+  tags        = "${local.tags}"
 }
