@@ -12,7 +12,7 @@ CHDIR_SHELL   := $(SHELL)
 OS            := darwin
 
 BASE_DIR      := $(shell pwd)
-ACCOUNT_ID    := $(shell aws sts --profile $(ROLE) get-caller-identity --output text --query 'Account')
+#ACCOUNT_ID    := $(shell aws sts --profile $(ROLE) get-caller-identity --output text --query 'Account')
 INVENTORY     := $(shell which terraform-inventory |awk '{print$3}')
 
 STATE_DIR     := $(BASE_DIR)/_states
@@ -22,10 +22,15 @@ KEYS_DIR      := $(BASE_DIR)/_keys
 MODULE        := $(BASE_DIR)/modules
 ANSIBLE       := $(BASE_DIR)/ansible
 
+## Example directories for all prerequisites
+DEFAULT       := $(BASE_DIR)/examples/default
+INIT          := $(BASE_DIR)/examples/default/init
+
+
 
 ## Default generics to test until I move it over to Rake
 default: test
-all:     terraform provision
+all:     sonarqube provision
 rebuild: destroy all
 
 
@@ -42,7 +47,7 @@ endef
 	@if test "$(REGION)" = ""; then  echo "REGION not set"; exit 1; fi
 
 .check-role:
-		@if test "$(ROLE)" = ""; then  echo "ROLE not set"; exit 1; fi
+	@if test "$(ROLE)" = ""; then  echo "ROLE not set"; exit 1; fi
 
 .directory-%:
 	$(call chdir, ${${*}})
@@ -92,7 +97,29 @@ test:
 init: .directory-MODULE
 	terraform init
 
-terraform: init .directory-MODULE .check-region
+preflight-init: .directory-INIT .check-region
+	terraform init                                                                \
+	&& aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform plan             \
+		-var region=$(REGION)                                                       \
+		-var key_name=$(ROLE)                                                       \
+	2>&1 |tee $(LOGS_DIR)/pre-plan.log                                          ; \
+                                                                                \
+	aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform apply               \
+		-state=$(STATE_DIR)/$(ROLE)-pre_terraform.tfstate                           \
+		-var region=$(REGION)                                                       \
+		-var key_name=$(ROLE)                                                       \
+		-auto-approve                                                               \
+	2>&1 |tee $(LOGS_DIR)/pre-apply.log
+
+preflight-output:
+	@if [ ! -f "$(STATE_DIR)/$(ROLE)-pre_terraform.tfstate" ]; then make pre-build ROLE=$(ROLE) ; fi
+	export ARN=$(shell terraform output -state=$(STATE_DIR)/$(ROLE)-pre_terraform.tfstate |awk -F ' = ' '{print$$2}') \
+	echo $(ARN)
+
+
+
+
+sonarqube: init .directory-MODULE .check-region
 	aws-vault exec $(ROLE) --assume-role-ttl=60m -- terraform plan                \
 		-var region=$(REGION)                                                       \
 		-var key_name=$(ROLE)                                                       \

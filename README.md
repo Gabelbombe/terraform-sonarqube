@@ -17,9 +17,9 @@ This module assumes that the AWS account this is deployed to has both a Route53 
 
 #### Quick start
 To get a working Sonarqube installation up and running complete the following steps
-1. Copy the default example inlcuding the init folder
-2. run terraform apply in the init folder and record the arn output.
-3. in the example.tf file:
+1. Copy the default example including the init folder
+2. Run terraform apply in the init folder and record the arn output.
+3. In the [main.tf](examples/default/main.tf) file:
    - replace the value for `parameters_key_arn`  with the value returned in the previous step
    - replace the value for certificate_arn with the arn of your wildcard certificate
    - replace the value for `route53_zone` with the name of your route53 hosted zone
